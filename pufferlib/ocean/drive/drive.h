@@ -402,7 +402,7 @@ struct Graph {
 
 // Function to create a new adjacency list node
 struct AdjListNode* newAdjListNode(int dest) {
-    struct AdjListNode* newNode = malloc(sizeof(struct AdjListNode));
+    struct AdjListNode* newNode = (struct AdjListNode*) malloc(sizeof(struct AdjListNode));
     newNode->dest = dest;
     newNode->next = NULL;
     return newNode;
@@ -410,9 +410,9 @@ struct AdjListNode* newAdjListNode(int dest) {
 
 // Function to create a graph of V vertices
 struct Graph* createGraph(int V) {
-    struct Graph* graph = malloc(sizeof(struct Graph));
+    struct Graph* graph = (struct Graph*) malloc(sizeof(struct Graph));
     graph->V = V;
-    graph->array = calloc(V, sizeof(struct AdjListNode*));
+    graph->array = (struct AdjListNode**) calloc(V, sizeof(struct AdjListNode*));
     return graph;
 }
 
@@ -1258,148 +1258,20 @@ int valid_active_agent(Drive* env, int agent_idx){
     return 0;
 }
 
-void set_active_agents(Drive* env){
-    const char* map_name = env->map_name ? env->map_name : "(unset-map)";
-
-    int capacity = env->num_agents;
-    if (capacity < 0) {
-        capacity = 0;
-    } else if (capacity > MAX_AGENTS) {
-        capacity = MAX_AGENTS;
+void finalize_set_active_agents(const Drive* env, const char* map_name)
+{
+    if (env->logs_capacity > 0 && env->active_agent_count > env->logs_capacity) {
+        fprintf(stderr,
+                "[set_active_agents] ERROR map=%s active=%d exceeds logs_capacity=%d\n",
+                map_name,
+                env->active_agent_count,
+                env->logs_capacity);
+        assert(env->active_agent_count <= env->logs_capacity);
     }
+}
 
-    env->active_agent_count = 0;
-    env->static_car_count = 0;
-    env->num_controllable_agents = 1;
-    env->expert_static_car_count = 0;
-    int active_agent_indices[MAX_AGENTS];
-    int static_car_indices[MAX_AGENTS];
-    int expert_static_car_indices[MAX_AGENTS];
-
-    if (env->control_all_agents == 1) {
-        SelectionBuckets b;
-        scan_vehicles_initial(env, &b, 1);
-
-        int desired = b.candidates_count;
-        if (desired > MAX_AGENTS) desired = MAX_AGENTS;
-        if (desired > capacity) desired = capacity;
-
-        if (desired <= 0) {
-            goto legacy_select;
-        }
-
-        if (!env->deterministic_agent_selection) {
-            fisher_yates_shuffle(b.candidates, b.candidates_count);
-        }
-
-        for (int k = 0; k < desired; k++) {
-            active_agent_indices[env->active_agent_count++] = b.candidates[k];
-            env->entities[b.candidates[k]].active_agent = 1;
-        }
-        for (int i = 0; i < b.statics_count && env->static_car_count < MAX_AGENTS; i++) {
-            static_car_indices[env->static_car_count++] = b.statics[i];
-        }
-        for (int k = desired; k < b.candidates_count && env->static_car_count < MAX_AGENTS; k++) {
-            static_car_indices[env->static_car_count++] = b.candidates[k];
-            env->entities[b.candidates[k]].active_agent = 0;
-        }
-
-        env->active_agent_indices = (int*)malloc(env->active_agent_count * sizeof(int));
-        env->static_car_indices = (int*)malloc(env->static_car_count * sizeof(int));
-        env->expert_static_car_indices = (int*)malloc(env->expert_static_car_count * sizeof(int));
-        for (int i = 0; i < env->active_agent_count; i++) env->active_agent_indices[i] = active_agent_indices[i];
-        for (int i = 0; i < env->static_car_count; i++) env->static_car_indices[i] = static_car_indices[i];
-        for (int i = 0; i < env->expert_static_car_count; i++) env->expert_static_car_indices[i] = expert_static_car_indices[i];
-
-        goto finalize;
-    } else if (env->policy_agents_per_env > 0) {
-        SelectionBuckets b;
-        scan_vehicles_initial(env, &b, 0);
-
-        int desired = env->policy_agents_per_env;
-        if (desired > MAX_AGENTS) desired = MAX_AGENTS;
-        if (desired > b.candidates_count) desired = b.candidates_count;
-        if (desired > capacity) desired = capacity;
-
-        if (!env->deterministic_agent_selection) {
-            fisher_yates_shuffle(b.candidates, b.candidates_count);
-        }
-        if (desired > 0) {
-            for (int k = 0; k < desired; k++) {
-                active_agent_indices[env->active_agent_count++] = b.candidates[k];
-                env->entities[b.candidates[k]].active_agent = 1;
-            }
-            for (int k = desired; k < b.candidates_count; k++) {
-                int idx = b.candidates[k];
-                if (env->expert_static_car_count < MAX_AGENTS) {
-                    expert_static_car_indices[env->expert_static_car_count++] = idx;
-                }
-                if (env->static_car_count < MAX_AGENTS) {
-                    static_car_indices[env->static_car_count++] = idx;
-                }
-                env->entities[idx].mark_as_expert = 1;
-                env->entities[idx].active_agent = 0;
-            }
-            for (int k = 0; k < b.forced_experts_count; k++) {
-                int idx = b.forced_experts[k];
-                if (env->expert_static_car_count < MAX_AGENTS) {
-                    expert_static_car_indices[env->expert_static_car_count++] = idx;
-                }
-                if (env->static_car_count < MAX_AGENTS) {
-                    static_car_indices[env->static_car_count++] = idx;
-                }
-            }
-            for (int i = 0; i < b.statics_count && env->static_car_count < MAX_AGENTS; i++) {
-                static_car_indices[env->static_car_count++] = b.statics[i];
-            }
-
-            env->active_agent_indices = (int*)malloc(env->active_agent_count * sizeof(int));
-            env->static_car_indices = (int*)malloc(env->static_car_count * sizeof(int));
-            env->expert_static_car_indices = (int*)malloc(env->expert_static_car_count * sizeof(int));
-            for (int i = 0; i < env->active_agent_count; i++) env->active_agent_indices[i] = active_agent_indices[i];
-            for (int i = 0; i < env->static_car_count; i++) env->static_car_indices[i] = static_car_indices[i];
-            for (int i = 0; i < env->expert_static_car_count; i++) env->expert_static_car_indices[i] = expert_static_car_indices[i];
-
-            goto finalize;
-        } else {
-            int picked = -1;
-            for (int i = 0; i < env->num_objects; i++) {
-                if (env->entities[i].type != VEHICLE) continue;
-                if (env->entities[i].traj_valid && env->entities[i].traj_valid[env->init_steps] == 1) { picked = i; break; }
-            }
-            if (picked == -1) {
-                for (int i = 0; i < env->num_objects; i++) { if (env->entities[i].type == VEHICLE) { picked = i; break; } }
-            }
-            if (picked != -1) {
-                active_agent_indices[env->active_agent_count++] = picked;
-                env->entities[picked].active_agent = 1;
-
-                for (int i = 0; i < env->num_objects; i++) {
-                    if (i == picked) continue;
-                    if (env->entities[i].type == VEHICLE) {
-                        if (env->static_car_count < MAX_AGENTS) {
-                            static_car_indices[env->static_car_count++] = i;
-                        }
-                        if (env->expert_static_car_count < MAX_AGENTS) {
-                            expert_static_car_indices[env->expert_static_car_count++] = i;
-                        }
-                        env->entities[i].active_agent = 0;
-                        env->entities[i].mark_as_expert = 1;
-                    }
-                }
-
-                env->active_agent_indices = (int*)malloc(env->active_agent_count * sizeof(int));
-                env->static_car_indices = (int*)malloc(env->static_car_count * sizeof(int));
-                env->expert_static_car_indices = (int*)malloc(env->expert_static_car_count * sizeof(int));
-                for (int i = 0; i < env->active_agent_count; i++) env->active_agent_indices[i] = active_agent_indices[i];
-                for (int i = 0; i < env->static_car_count; i++) env->static_car_indices[i] = static_car_indices[i];
-                for (int i = 0; i < env->expert_static_car_count; i++) env->expert_static_car_indices[i] = expert_static_car_indices[i];
-                goto finalize;
-            }
-        }
-    }
-
-legacy_select:
+void legacy_select(Drive* env, int *active_agent_indices, int* static_car_indices, int* expert_static_car_indices)
+{
     if(env->num_agents == 0){
         env->num_agents = MAX_AGENTS;
     }
@@ -1464,16 +1336,156 @@ legacy_select:
     for(int i=0;i<env->expert_static_car_count;i++){
         env->expert_static_car_indices[i] = expert_static_car_indices[i];
     }
-finalize:
-    if (env->logs_capacity > 0 && env->active_agent_count > env->logs_capacity) {
-        fprintf(stderr,
-                "[set_active_agents] ERROR map=%s active=%d exceeds logs_capacity=%d\n",
-                map_name,
-                env->active_agent_count,
-                env->logs_capacity);
-        assert(env->active_agent_count <= env->logs_capacity);
+}
+
+void set_active_agents(Drive* env){
+    const char* map_name = env->map_name ? env->map_name : "(unset-map)";
+
+    int capacity = env->num_agents;
+    if (capacity < 0) {
+        capacity = 0;
+    } else if (capacity > MAX_AGENTS) {
+        capacity = MAX_AGENTS;
     }
-    return;
+
+    env->active_agent_count = 0;
+    env->static_car_count = 0;
+    env->num_controllable_agents = 1;
+    env->expert_static_car_count = 0;
+    int active_agent_indices[MAX_AGENTS];
+    int static_car_indices[MAX_AGENTS];
+    int expert_static_car_indices[MAX_AGENTS];
+
+    if (env->control_all_agents == 1) {
+        SelectionBuckets b;
+        scan_vehicles_initial(env, &b, 1);
+
+        int desired = b.candidates_count;
+        if (desired > MAX_AGENTS) desired = MAX_AGENTS;
+        if (desired > capacity) desired = capacity;
+
+        if (desired <= 0) {
+            legacy_select(env, active_agent_indices, static_car_indices, expert_static_car_indices);
+            finalize_set_active_agents(env, map_name);
+            return;
+        }
+
+        if (!env->deterministic_agent_selection) {
+            fisher_yates_shuffle(b.candidates, b.candidates_count);
+        }
+
+        for (int k = 0; k < desired; k++) {
+            active_agent_indices[env->active_agent_count++] = b.candidates[k];
+            env->entities[b.candidates[k]].active_agent = 1;
+        }
+        for (int i = 0; i < b.statics_count && env->static_car_count < MAX_AGENTS; i++) {
+            static_car_indices[env->static_car_count++] = b.statics[i];
+        }
+        for (int k = desired; k < b.candidates_count && env->static_car_count < MAX_AGENTS; k++) {
+            static_car_indices[env->static_car_count++] = b.candidates[k];
+            env->entities[b.candidates[k]].active_agent = 0;
+        }
+
+        env->active_agent_indices = (int*)malloc(env->active_agent_count * sizeof(int));
+        env->static_car_indices = (int*)malloc(env->static_car_count * sizeof(int));
+        env->expert_static_car_indices = (int*)malloc(env->expert_static_car_count * sizeof(int));
+        for (int i = 0; i < env->active_agent_count; i++) env->active_agent_indices[i] = active_agent_indices[i];
+        for (int i = 0; i < env->static_car_count; i++) env->static_car_indices[i] = static_car_indices[i];
+        for (int i = 0; i < env->expert_static_car_count; i++) env->expert_static_car_indices[i] = expert_static_car_indices[i];
+
+        finalize_set_active_agents(env, map_name);
+        return;
+    } else if (env->policy_agents_per_env > 0) {
+        SelectionBuckets b;
+        scan_vehicles_initial(env, &b, 0);
+
+        int desired = env->policy_agents_per_env;
+        if (desired > MAX_AGENTS) desired = MAX_AGENTS;
+        if (desired > b.candidates_count) desired = b.candidates_count;
+        if (desired > capacity) desired = capacity;
+
+        if (!env->deterministic_agent_selection) {
+            fisher_yates_shuffle(b.candidates, b.candidates_count);
+        }
+        if (desired > 0) {
+            for (int k = 0; k < desired; k++) {
+                active_agent_indices[env->active_agent_count++] = b.candidates[k];
+                env->entities[b.candidates[k]].active_agent = 1;
+            }
+            for (int k = desired; k < b.candidates_count; k++) {
+                int idx = b.candidates[k];
+                if (env->expert_static_car_count < MAX_AGENTS) {
+                    expert_static_car_indices[env->expert_static_car_count++] = idx;
+                }
+                if (env->static_car_count < MAX_AGENTS) {
+                    static_car_indices[env->static_car_count++] = idx;
+                }
+                env->entities[idx].mark_as_expert = 1;
+                env->entities[idx].active_agent = 0;
+            }
+            for (int k = 0; k < b.forced_experts_count; k++) {
+                int idx = b.forced_experts[k];
+                if (env->expert_static_car_count < MAX_AGENTS) {
+                    expert_static_car_indices[env->expert_static_car_count++] = idx;
+                }
+                if (env->static_car_count < MAX_AGENTS) {
+                    static_car_indices[env->static_car_count++] = idx;
+                }
+            }
+            for (int i = 0; i < b.statics_count && env->static_car_count < MAX_AGENTS; i++) {
+                static_car_indices[env->static_car_count++] = b.statics[i];
+            }
+
+            env->active_agent_indices = (int*)malloc(env->active_agent_count * sizeof(int));
+            env->static_car_indices = (int*)malloc(env->static_car_count * sizeof(int));
+            env->expert_static_car_indices = (int*)malloc(env->expert_static_car_count * sizeof(int));
+            for (int i = 0; i < env->active_agent_count; i++) env->active_agent_indices[i] = active_agent_indices[i];
+            for (int i = 0; i < env->static_car_count; i++) env->static_car_indices[i] = static_car_indices[i];
+            for (int i = 0; i < env->expert_static_car_count; i++) env->expert_static_car_indices[i] = expert_static_car_indices[i];
+
+            finalize_set_active_agents(env, map_name);
+            return;
+        } else {
+            int picked = -1;
+            for (int i = 0; i < env->num_objects; i++) {
+                if (env->entities[i].type != VEHICLE) continue;
+                if (env->entities[i].traj_valid && env->entities[i].traj_valid[env->init_steps] == 1) { picked = i; break; }
+            }
+            if (picked == -1) {
+                for (int i = 0; i < env->num_objects; i++) { if (env->entities[i].type == VEHICLE) { picked = i; break; } }
+            }
+            if (picked != -1) {
+                active_agent_indices[env->active_agent_count++] = picked;
+                env->entities[picked].active_agent = 1;
+
+                for (int i = 0; i < env->num_objects; i++) {
+                    if (i == picked) continue;
+                    if (env->entities[i].type == VEHICLE) {
+                        if (env->static_car_count < MAX_AGENTS) {
+                            static_car_indices[env->static_car_count++] = i;
+                        }
+                        if (env->expert_static_car_count < MAX_AGENTS) {
+                            expert_static_car_indices[env->expert_static_car_count++] = i;
+                        }
+                        env->entities[i].active_agent = 0;
+                        env->entities[i].mark_as_expert = 1;
+                    }
+                }
+
+                env->active_agent_indices = (int*)malloc(env->active_agent_count * sizeof(int));
+                env->static_car_indices = (int*)malloc(env->static_car_count * sizeof(int));
+                env->expert_static_car_indices = (int*)malloc(env->expert_static_car_count * sizeof(int));
+                for (int i = 0; i < env->active_agent_count; i++) env->active_agent_indices[i] = active_agent_indices[i];
+                for (int i = 0; i < env->static_car_count; i++) env->static_car_indices[i] = static_car_indices[i];
+                for (int i = 0; i < env->expert_static_car_count; i++) env->expert_static_car_indices[i] = expert_static_car_indices[i];
+                finalize_set_active_agents(env, map_name);
+                return;
+            }
+        }
+    }
+
+    legacy_select(env, active_agent_indices, static_car_indices, expert_static_car_indices);
+    finalize_set_active_agents(env, map_name);
 }
 
 void remove_bad_trajectories(Drive* env){
